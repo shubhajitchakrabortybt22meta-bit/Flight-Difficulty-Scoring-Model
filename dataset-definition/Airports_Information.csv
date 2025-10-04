@@ -1,0 +1,3 @@
+Column Name,Description
+airport_iata_code,"Three-letter IATA code representing the airport (e.g., ""LAX"", ""JFK"")."
+iso_country_code,"Two-letter country code where the airport is located (e.g., ""US"", ""CA"")."

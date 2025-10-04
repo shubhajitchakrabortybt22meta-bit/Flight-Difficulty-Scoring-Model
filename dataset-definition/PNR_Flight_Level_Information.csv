@@ -1,0 +1,13 @@
+Column Name,Description
+company_id,"IATA code of the airline operating the flight"
+flight_number,"Unique identifier of the flight associated with the PNR"
+scheduled_departure_date_local,"Local date of the flight's scheduled departure"
+scheduled_departure_station_code,"IATA airport code of the scheduled departure airport (e.g., ""JFK"", ""LAX"")"
+scheduled_arrival_station_code,"IATA airport code of the scheduled arrival airport (e.g., ""JFK"", ""LAX"")"
+record_locator,"Unique identifier for the PNR, used to reference a passenger booking"
+pnr_creation_date,"Date when the PNR was created"
+total_pax,"Total number of passengers associated with the PNR on this flight"
+lap_child_count,"Number of lap children (infants not occupying a seat) included in the PNR"
+is_child,"Indicates whether the passenger is classified as a child"
+basic_economy_pax,"Number of passengers in the PNR booked in basic economy fare class"
+is_stroller_user,"Indicates whether the passenger is a stroller user"

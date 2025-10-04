@@ -1,0 +1,5 @@
+Column Name,Description
+record_locator,"Unique identifier for the PNR, used to reference a passenger booking"
+pnr_creation_date,"Date when the PNR was created."
+flight_number,"Unique identifier of the flight associated with the PNR"
+special_service_request,"Description of the requested special service (e.g., wheelchair assistance)"

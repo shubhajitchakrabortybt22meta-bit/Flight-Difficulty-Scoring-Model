@@ -1,0 +1,9 @@
+Column Name,Description
+company_id,"IATA code of the airline operating the flight"
+flight_number,"Unique identifier assigned to a specific flight"
+scheduled_departure_date_local,"Local date of the flight's scheduled departure"
+scheduled_departure_station_code,"IATA airport code of the scheduled departure airport (e.g., ""JFK"", ""LAX"")"
+scheduled_arrival_station_code,"IATA airport code of the scheduled arrival airport (e.g., ""JFK"", ""LAX"")"
+bag_tag_unique_number,"Unique identifier for the bag tag"
+bag_tag_issue_date,"Date the bag tag was issued"
+bag_type,"Type of bag (e.g., ""Checked"", ""Transfer"") *Hot transfer bags are transfer bags with a connection time of less than 30 minutes"
