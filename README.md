@@ -15,6 +15,7 @@ For step-by-step environment creation, required data files, and run commands see
 Fast path (after cloning and changing into the repo directory):  
 > **Note:** Ensure Python 3 and pip are installed and available on your PATH.  
 Verify with:
+### For MacOS/Linux
 ```bash
 python3 --version
 pip --version
@@ -27,6 +28,18 @@ pip install -r requirements.txt
 mkdir -p resources  # place source CSVs here
 python3 all_analysis.py --config config.yaml
 ```
+### For Windows (PowerShell)
+```powershell
+python --version
+pip --version
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install --upgrade pip
+pip install -r requirements.txt
+mkdir resources  # place source CSVs here
+python all_analysis.py --config config.yaml
+```
+
 If anything fails, consult the troubleshooting table in `SETUP_GUIDE.md`.
 
 ## Overview
