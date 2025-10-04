@@ -20,13 +20,12 @@ python3 --version
 pip --version
 ```
 ```bash
-source .venv/bin/activate
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 mkdir -p resources  # place source CSVs here
-python all_analysis.py --config config.yaml
+python3 all_analysis.py --config config.yaml
 ```
 If anything fails, consult the troubleshooting table in `SETUP_GUIDE.md`.
 
@@ -189,7 +188,7 @@ Fallback Behavior: Missing file or missing required columns triggers automatic z
 
 Testing: Run the included demo
 ```bash
-python weather_enrichment_demo.py
+python3 weather_enrichment_demo.py
 ```
 to view sample severity assignment (see `resources/Flight_Level_Data_weather_demo.csv`).
 
@@ -664,21 +663,21 @@ Ensure virtual environment with dependencies (pandas, numpy, seaborn, matplotlib
 
 Run:
 ```bash
-python all_analysis.py --config config.yaml
+python3 all_analysis.py --config config.yaml
 ```
 Add plots interactively:
 ```bash
-python all_analysis.py --config config.yaml --show
+python3 all_analysis.py --config config.yaml --show
 ```
 Outputs land in `final_result_data/` and `result_overview/`.
 
 ### Environment Activation Reminder
-If you encounter `ModuleNotFoundError: yaml` or missing libs, you likely ran the system interpreter (`python3`) instead of the project venv. Always activate the environment first or invoke with `.venv/bin/python`:
+If you encounter `ModuleNotFoundError: yaml` or missing libs, you likely ran the system interpreter (`python3`) instead of the project venv. Always activate the environment first or invoke with `.venv/bin/python3`:
 ```bash
 source .venv/bin/activate
-python all_analysis.py --config config.yaml
+python3 all_analysis.py --config config.yaml
 # OR
-.venv/bin/python all_analysis.py --config config.yaml
+.venv/bin/python3 all_analysis.py --config config.yaml
 ```
 
 ### Timezone Handling
@@ -687,7 +686,7 @@ Datetime fields from baggage tag issue and scheduled departure are normalized to
 ## Running Individual Components
 Difficulty scoring only:
 ```bash
-python difficulty_scoring.py \
+python3 difficulty_scoring.py \
   --flights resources/Flight_Level_Data.csv \
   --bags resources/Bag_Level_Data.csv \
   --pnr_f resources/PNR_Flight_Level_Data.csv \
@@ -697,7 +696,7 @@ python difficulty_scoring.py \
 ```
 Operational insights on existing score file:
 ```bash
-python operational_insights.py \
+python3 operational_insights.py \
   --scores final_result_data/flight_difficulty_scores.csv \
   --drivers_csv final_result_data/drivers.csv \
   --dest_csv final_result_data/destination_consistency.csv
