@@ -29,11 +29,15 @@ from __future__ import annotations
 import argparse
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Sequence
+from typing import Dict, List, Sequence, Optional
+import yaml
+from pathlib import Path
 
 FLIGHT_KEY = ["company_id", "flight_number", "scheduled_departure_date_local"]
 
-# Default feature weights (must sum to 1; if not, will be normalized)
+CONFIG_DEFAULT_PATH = Path('config.yaml')
+
+# Default feature weights (must sum to 1; if not, will be normalized) (pre-config fallback)
 DEFAULT_WEIGHTS = {
     'ground_time_pressure': 0.15,
     'actual_turn_deficit': 0.07,
@@ -54,7 +58,23 @@ DEFAULT_WEIGHTS = {
     'widebody_flag': 0.06,
 }
 
-FEATURE_ORDER = list(DEFAULT_WEIGHTS.keys())
+PRIORITY2_FEATURES = [
+    'ssr_mobility_count',
+    'ssr_special_handling_count',
+    'bag_issue_lead_mean',
+    'bag_late_issue_ratio',
+    'bag_per_seat_ratio',
+    'destination_base_difficulty',
+]
+
+FEATURE_ORDER = list(DEFAULT_WEIGHTS.keys())  # will be extended dynamically when config or engineer adds new
+
+def load_config(path: Optional[str] = None) -> dict:
+    cfg_path = Path(path) if path else CONFIG_DEFAULT_PATH
+    if cfg_path.exists():
+        with open(cfg_path, 'r') as f:
+            return yaml.safe_load(f) or {}
+    return {}
 
 
 def _read_csv(path: str) -> pd.DataFrame:
@@ -80,12 +100,18 @@ def engineer_features(flights: pd.DataFrame,
                       bags: pd.DataFrame,
                       pnr_flight: pd.DataFrame,
                       pnr_remark: pd.DataFrame,
-                      airports: pd.DataFrame) -> pd.DataFrame:
+                      airports: pd.DataFrame,
+                      config: Optional[dict] = None) -> pd.DataFrame:
     """Return master DataFrame with engineered features ready for scaling/scoring."""
     # Base copy
     master = flights.copy()
 
     # --- Passenger Features ---
+    # Config values
+    late_days = (config or {}).get('late_booking_days', 3)
+    mobility_keywords = set(k.upper() for k in (config or {}).get('mobility_ssr_keywords', ['WCHR','WCHS','WCHC','MOBILITY']))
+    special_keywords = set(k.upper() for k in (config or {}).get('special_handling_ssr_keywords', ['PET','UMNR','MEDA','STRETCHER']))
+
     # Booking lead time features
     if 'pnr_creation_date' in pnr_flight.columns:
         pnr_flight = pnr_flight.copy()
@@ -100,8 +126,7 @@ def engineer_features(flights: pd.DataFrame,
         pnr_flight['booking_lead_days'] = np.nan
 
     # Late booking indicator (within X days threshold)
-    LATE_THRESHOLD_DAYS = 3
-    pnr_flight['late_booking_flag'] = (pnr_flight['booking_lead_days'] <= LATE_THRESHOLD_DAYS).astype(int)
+    pnr_flight['late_booking_flag'] = (pnr_flight['booking_lead_days'] <= late_days).astype(int)
 
     pax_agg = pnr_flight.groupby(FLIGHT_KEY).agg(
         total_pax=('total_pax', 'sum'),
@@ -134,7 +159,7 @@ def engineer_features(flights: pd.DataFrame,
         master['total_bags'] = 0
         master['transfer_ratio'] = np.nan
 
-    # --- SSR Features ---
+    # --- SSR Features --- (base count + categorized counts)
     pnr_keys = pnr_flight[FLIGHT_KEY + ['record_locator']].drop_duplicates()
     ssr = pnr_remark.merge(pnr_keys, on='record_locator', how='inner')
     # If flight_number missing after merge (e.g., remarks lacked it), fall back to distributing by record_locator occurrences
@@ -146,6 +171,30 @@ def engineer_features(flights: pd.DataFrame,
     else:
         ssr_counts = ssr.groupby(FLIGHT_KEY).size().reset_index(name='ssr_count')
     master = master.merge(ssr_counts, on=FLIGHT_KEY, how='left')
+
+    # Categorize SSR remarks if raw text or code available
+    ssr_cat = pnr_remark.merge(pnr_keys, on='record_locator', how='inner')
+    if 'special_service_request' in ssr_cat.columns:
+        ssr_cat['special_service_request'] = ssr_cat['special_service_request'].astype(str)
+        ssr_cat['SSR_UP'] = ssr_cat['special_service_request'].str.upper()
+        ssr_cat['mobility_flag'] = ssr_cat['SSR_UP'].apply(lambda x: any(k in x for k in mobility_keywords))
+        ssr_cat['special_flag'] = ssr_cat['SSR_UP'].apply(lambda x: any(k in x for k in special_keywords))
+        if set(FLIGHT_KEY).issubset(ssr_cat.columns):
+            ssr_mob = ssr_cat.groupby(FLIGHT_KEY)['mobility_flag'].sum().reset_index(name='ssr_mobility_count')
+            ssr_spec = ssr_cat.groupby(FLIGHT_KEY)['special_flag'].sum().reset_index(name='ssr_special_handling_count')
+        else:
+            # Fallback: aggregate per record_locator then merge to flight keys
+            agg_rl = ssr_cat.groupby('record_locator').agg(
+                mobility_flag=('mobility_flag','sum'),
+                special_flag=('special_flag','sum')
+            ).reset_index()
+            agg_rl = agg_rl.merge(pnr_keys, on='record_locator', how='left')
+            ssr_mob = agg_rl.groupby(FLIGHT_KEY)['mobility_flag'].sum().reset_index(name='ssr_mobility_count')
+            ssr_spec = agg_rl.groupby(FLIGHT_KEY)['special_flag'].sum().reset_index(name='ssr_special_handling_count')
+        master = master.merge(ssr_mob, on=FLIGHT_KEY, how='left').merge(ssr_spec, on=FLIGHT_KEY, how='left')
+    else:
+        master['ssr_mobility_count'] = 0
+        master['ssr_special_handling_count'] = 0
 
     # --- Ground Time Pressure ---
     if {'minimum_turn_minutes', 'scheduled_ground_time_minutes'}.issubset(master.columns):
@@ -177,21 +226,105 @@ def engineer_features(flights: pd.DataFrame,
         master['basic_economy_ratio'] = np.nan
 
     # widebody flag (threshold or fleet_type pattern)
-    WIDEBODY_SEAT_THRESHOLD = 250
+    WIDEBODY_SEAT_THRESHOLD = (config or {}).get('widebody_seat_threshold', 250)
     master['widebody_flag'] = ((master.get('total_seats', 0) >= WIDEBODY_SEAT_THRESHOLD) |
                                master.get('fleet_type','').astype(str).str.contains('767|777|787|330|350', case=False, na=False)).astype(int)
 
     # Fill numeric NaNs with 0 (except ratios keep NaN for now; will handle after scaling)
     for col in ['children', 'stroller_users', 'lap_children', 'ssr_count', 'hot_transfer_count',
-                'total_transfer_bags', 'total_bags', 'ground_time_pressure', 'actual_turn_deficit']:
+                'total_transfer_bags', 'total_bags', 'ground_time_pressure', 'actual_turn_deficit',
+                'ssr_mobility_count','ssr_special_handling_count']:
         if col in master.columns:
             master[col] = master[col].fillna(0)
 
     # Fill ratios that might remain NaN if division by 0
-    ratio_cols = ['transfer_ratio','basic_economy_ratio','turn_deficit_ratio']
+    # bag_per_seat_ratio (Priority 2)
+    if 'total_seats' in master.columns:
+        master['bag_per_seat_ratio'] = np.where(master['total_seats']>0, master.get('total_bags',0)/master['total_seats'], np.nan)
+
+    # Bag tag issue timing (Priority 2)
+    bag_issue_col = None
+    for candidate in ['bag_tag_issue_datetime','bag_issue_datetime','bag_tag_issue_date']:
+        if candidate in bags.columns:
+            bag_issue_col = candidate
+            break
+    if bag_issue_col:
+        bags_tmp = bags.copy()
+        bags_tmp[bag_issue_col] = pd.to_datetime(bags_tmp[bag_issue_col], errors='coerce')
+        if 'scheduled_departure_datetime_local' in flights.columns:
+            dep_map = flights[FLIGHT_KEY + ['scheduled_departure_datetime_local']].drop_duplicates()
+            bags_tmp = bags_tmp.merge(dep_map, on=FLIGHT_KEY, how='left')
+            # Normalize potential timezone differences (convert both sides to naive UTC-less timestamps)
+            dep_ts = pd.to_datetime(bags_tmp['scheduled_departure_datetime_local'], errors='coerce')
+            issue_ts = bags_tmp[bag_issue_col]
+            # If timezone aware, convert to UTC then drop tz; if not, leave as-is
+            if hasattr(dep_ts.dt, 'tz') and dep_ts.dt.tz is not None:
+                dep_ts = dep_ts.dt.tz_convert('UTC').dt.tz_localize(None)
+            if hasattr(issue_ts.dt, 'tz') and issue_ts.dt.tz is not None:
+                try:
+                    issue_ts = issue_ts.dt.tz_convert('UTC').dt.tz_localize(None)
+                except Exception:
+                    issue_ts = issue_ts.dt.tz_localize(None)
+            # Fallback: if mixed types cause failure, coerce again without tz
+            bags_tmp['bag_issue_lead_days'] = (dep_ts - issue_ts).dt.total_seconds()/(3600*24)
+            bag_issue_agg = bags_tmp.groupby(FLIGHT_KEY).agg(
+                bag_issue_lead_mean=('bag_issue_lead_days','mean'),
+                bag_late_issue_ratio=('bag_issue_lead_days', lambda s: (s<=0).mean() if len(s)>0 else np.nan)
+            ).reset_index()
+            master = master.merge(bag_issue_agg, on=FLIGHT_KEY, how='left')
+    else:
+        master['bag_issue_lead_mean'] = 0
+        master['bag_late_issue_ratio'] = 0
+    # Fill new bag timing NaNs
+    for c in ['bag_issue_lead_mean','bag_late_issue_ratio']:
+        if c in master.columns:
+            master[c] = master[c].fillna(0)
+
+    ratio_cols = ['transfer_ratio','basic_economy_ratio','turn_deficit_ratio','bag_per_seat_ratio']
     for rc in ratio_cols:
         if rc in master.columns:
             master[rc] = master[rc].fillna(0)
+
+    # -----------------------------
+    # Priority 3 Advanced Features
+    # -----------------------------
+    volatility_window = (config or {}).get('rolling', {}).get('volatility_window', 5)
+    # Volatility of load_factor & ground_time_pressure using past occurrences of SAME flight_number (optionally also route)
+    if 'flight_number' in master.columns and 'scheduled_departure_date_local' in master.columns:
+        master['scheduled_departure_date_local'] = pd.to_datetime(master['scheduled_departure_date_local'], errors='coerce')
+        master = master.sort_values(['flight_number','scheduled_departure_date_local'])
+        lf_shift = master.groupby('flight_number')['load_factor'].shift(1)
+        gtp_shift = master.groupby('flight_number')['ground_time_pressure'].shift(1)
+        master['load_factor_volatility'] = (master.assign(lf_shift=lf_shift)
+                                                .groupby('flight_number')['lf_shift']
+                                                .transform(lambda s: s.rolling(volatility_window, min_periods=2).std()))
+        master['ground_time_pressure_volatility'] = (master.assign(gtp_shift=gtp_shift)
+                                                       .groupby('flight_number')['gtp_shift']
+                                                       .transform(lambda s: s.rolling(volatility_window, min_periods=2).std()))
+        master['load_factor_volatility'] = master['load_factor_volatility'].fillna(0)
+        master['ground_time_pressure_volatility'] = master['ground_time_pressure_volatility'].fillna(0)
+    else:
+        master['load_factor_volatility'] = 0
+        master['ground_time_pressure_volatility'] = 0
+
+    # Time-of-day slot congestion: count of departures in same hour window at departure station (context load proxy)
+    if {'scheduled_departure_datetime_local','scheduled_departure_station_code'}.issubset(master.columns):
+        dep_dt = pd.to_datetime(master['scheduled_departure_datetime_local'], errors='coerce')
+        master['dep_hour'] = dep_dt.dt.hour
+        hour_counts = master.groupby(['scheduled_departure_station_code','dep_hour']).size().reset_index(name='slot_congestion_count')
+        master = master.merge(hour_counts, on=['scheduled_departure_station_code','dep_hour'], how='left')
+    else:
+        master['slot_congestion_count'] = 0
+
+    # Interaction terms
+    master['transfer_ground_interaction'] = master.get('transfer_ratio',0) * master.get('ground_time_pressure',0)
+    master['load_pressure_interaction'] = master.get('load_factor',0) * master.get('ground_time_pressure',0)
+
+    # Weather severity index (if present in flights) expected range [0,1] or numeric; else default 0
+    if 'weather_severity_index' in master.columns:
+        master['weather_severity_index'] = master['weather_severity_index'].fillna(0)
+    else:
+        master['weather_severity_index'] = 0
 
     return master
 
@@ -288,7 +421,8 @@ def compute_difficulty_scores(flights_path: str,
                               pnr_remark_path: str,
                               airports_path: str,
                               weights: Dict[str, float] | None = None,
-                              output_csv: str | None = None) -> pd.DataFrame:
+                              output_csv: str | None = None,
+                              config: Optional[dict] = None) -> pd.DataFrame:
     flights = _read_csv(flights_path)
     bags = _read_csv(bags_path)
     pnr_f = _read_csv(pnr_flight_path)
@@ -306,8 +440,18 @@ def compute_difficulty_scores(flights_path: str,
         if 'scheduled_departure_date_local' in df.columns:
             df['scheduled_departure_date_local'] = pd.to_datetime(df['scheduled_departure_date_local'], errors='coerce').dt.date
 
-    master = engineer_features(flights, bags, pnr_f, pnr_r, airports)
-    scored = per_day_scale_and_score(master, weights=weights)
+    master = engineer_features(flights, bags, pnr_f, pnr_r, airports, config=config)
+    # Extend feature order dynamically if new features present and have weights
+    dynamic_weights = weights.copy() if weights else DEFAULT_WEIGHTS.copy()
+    if config and 'weights' in config:
+        dynamic_weights.update(config['weights'])
+    # Build feature list from weights keys present in master
+    feature_cols = [f for f in dynamic_weights.keys() if f in master.columns]
+    scored = per_day_scale_and_score(master,
+                                     weights=dynamic_weights,
+                                     feature_cols=feature_cols,
+                                     difficult_threshold=(config or {}).get('thresholds',{}).get('difficult',0.25),
+                                     medium_threshold=(config or {}).get('thresholds',{}).get('medium',0.75))
 
     if output_csv:
         scored.to_csv(output_csv, index=False)
@@ -325,19 +469,32 @@ def _build_arg_parser():
     p.add_argument('--output', required=False, default='final_result_data/flight_difficulty_scores.csv')
     p.add_argument('--difficult_threshold', type=float, default=0.25, help='Top proportion classified as Difficult')
     p.add_argument('--medium_threshold', type=float, default=0.75, help='Proportion boundary for Medium (rest Easy)')
+    p.add_argument('--config', required=False, help='YAML config file overriding weights & thresholds')
     return p
 
 
 def main():
     args = _build_arg_parser().parse_args()
+    config = load_config(args.config)
+    # If CLI thresholds set explicitly they override config
+    if 'thresholds' not in config:
+        config['thresholds'] = {}
+    if args.difficult_threshold != 0.25:
+        config['thresholds']['difficult'] = args.difficult_threshold
+    if args.medium_threshold != 0.75:
+        config['thresholds']['medium'] = args.medium_threshold
+
+    weights = config.get('weights', DEFAULT_WEIGHTS)
+
     scores = compute_difficulty_scores(
         flights_path=args.flights,
         bags_path=args.bags,
         pnr_flight_path=args.pnr_f,
         pnr_remark_path=args.pnr_r,
         airports_path=args.airports,
-        weights=DEFAULT_WEIGHTS,
+        weights=weights,
         output_csv=args.output,
+        config=config,
     )
     # Simple summary output
     print("Computed difficulty scores for {} flights.".format(len(scores)))

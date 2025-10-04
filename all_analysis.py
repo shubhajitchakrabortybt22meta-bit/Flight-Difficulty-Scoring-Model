@@ -24,6 +24,7 @@ Dependencies: pandas, numpy, seaborn, matplotlib (and existing local modules)
 """
 from __future__ import annotations
 import argparse
+import yaml
 import pandas as pd
 import numpy as np
 import seaborn as sns
@@ -35,6 +36,7 @@ import textwrap
 import difficulty_scoring as ds
 import eda
 import operational_insights as oi
+import weather_enrichment as wx
 
 INPUT_DIR = Path('resources')
 RESULT_DATA_DIR = Path('final_result_data')
@@ -209,7 +211,50 @@ def _resolve_input_path(p: Path) -> Path:
     raise FileNotFoundError(f"Input file not found in resources or root: {p}")
 
 
-def run_pipeline(show_plots: bool = False):
+def _load_config(path: str | None):
+    if path and Path(path).exists():
+        with open(path,'r') as f:
+            return yaml.safe_load(f) or {}
+    if Path('config.yaml').exists():
+        with open('config.yaml','r') as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+def _compute_destination_base(scored: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """Compute destination_base_difficulty using only PAST days (rolling window) to avoid leakage.
+    Steps:
+      1. Sort by date.
+      2. For each destination, maintain cumulative difficult counts & total counts prior to current day.
+      3. Optionally apply trailing window (config rolling.destination_base_window) if provided.
+    """
+    if 'scheduled_departure_date_local' not in scored.columns:
+        return scored
+    df = scored.copy()
+    df['scheduled_departure_date_local'] = pd.to_datetime(df['scheduled_departure_date_local'])
+    window = config.get('rolling',{}).get('destination_base_window', 7)
+    min_flights = config.get('rolling',{}).get('destination_min_flights', 5)
+    # Daily aggregates per destination
+    daily = df.groupby(['scheduled_arrival_station_code','scheduled_departure_date_local']).agg(
+        flights=('difficulty_class','count'),
+        difficult=('difficulty_class', lambda s: (s=='Difficult').sum())
+    ).reset_index().sort_values('scheduled_departure_date_local')
+    # Rolling past window excluding current day: use expanding shift then subtract window overflow
+    daily['difficult_rate'] = daily['difficult'] / daily['flights']
+    # For rolling past we shift by one day per destination then rolling window sum
+    daily['difficult_shift'] = daily.groupby('scheduled_arrival_station_code')['difficult'].shift(1)
+    daily['flights_shift'] = daily.groupby('scheduled_arrival_station_code')['flights'].shift(1)
+    daily['difficult_shift'] = daily['difficult_shift'].fillna(0)
+    daily['flights_shift'] = daily['flights_shift'].fillna(0)
+    daily['rolling_difficult'] = daily.groupby('scheduled_arrival_station_code')['difficult_shift'].rolling(window, min_periods=1).sum().reset_index(level=0,drop=True)
+    daily['rolling_flights'] = daily.groupby('scheduled_arrival_station_code')['flights_shift'].rolling(window, min_periods=1).sum().reset_index(level=0,drop=True)
+    daily['destination_base_difficulty'] = np.where(daily['rolling_flights']>=min_flights,
+                                                    daily['rolling_difficult']/daily['rolling_flights'], np.nan)
+    base_map = daily[['scheduled_arrival_station_code','scheduled_departure_date_local','destination_base_difficulty']]
+    df = df.merge(base_map, on=['scheduled_arrival_station_code','scheduled_departure_date_local'], how='left')
+    df['destination_base_difficulty'] = df['destination_base_difficulty'].fillna(0)
+    return df
+
+def run_pipeline(show_plots: bool = False, config_path: str | None = None):
     print("=== 1. Loading Data ===")
     flights = pd.read_csv(_resolve_input_path(DATA_FILES['flights']))
     bags = pd.read_csv(_resolve_input_path(DATA_FILES['bags']))
@@ -235,7 +280,10 @@ def run_pipeline(show_plots: bool = False):
     print("Flights rows:", len(flights), "Bags:", len(bags), "PNR flights:", len(pnr_f), "Remarks:", len(pnr_r))
 
     print("\n=== 2. Feature Engineering (Core) ===")
-    master = ds.engineer_features(flights, bags, pnr_f, pnr_r, airports)
+    config = _load_config(config_path)
+    # Optional weather enrichment
+    flights = wx.enrich_with_weather(flights)
+    master = ds.engineer_features(flights, bags, pnr_f, pnr_r, airports, config=config)
     master = add_additional_features(master)
     print("Master engineered columns (sample):", master.columns[:25].tolist())
     print(master.head())
@@ -275,7 +323,27 @@ def run_pipeline(show_plots: bool = False):
     print("Regression SSR + Load Factor -> Delay:", reg_results)
 
     print("\n=== 4. Difficulty Scoring (Daily Reset) ===")
-    scored = ds.per_day_scale_and_score(master)
+    # dynamic weights via config
+    weights = config.get('weights', ds.DEFAULT_WEIGHTS)
+    feature_cols = [f for f in weights.keys() if f in master.columns]
+    scored = ds.per_day_scale_and_score(master,
+                                        weights=weights,
+                                        feature_cols=feature_cols,
+                                        difficult_threshold=config.get('thresholds',{}).get('difficult',0.25),
+                                        medium_threshold=config.get('thresholds',{}).get('medium',0.75))
+    # Compute destination base difficulty and add into dataset then (optionally) re-score including it if weight present
+    if 'destination_base_difficulty' in weights:
+        scored = _compute_destination_base(scored, config)
+        # If destination_base_difficulty weight provided, incorporate by recalculating score with scaled new feature only
+        if 'destination_base_difficulty' not in feature_cols:
+            feature_cols.append('destination_base_difficulty')
+            # Scale and recompute final difficulty_score adding new component without re-scaling others to avoid duplication
+            # Simpler: re-run scaling entirely including new feature
+            scored = ds.per_day_scale_and_score(scored.drop(columns=[c for c in scored.columns if c.endswith('_scaled')]),
+                                                weights=weights,
+                                                feature_cols=feature_cols,
+                                                difficult_threshold=config.get('thresholds',{}).get('difficult',0.25),
+                                                medium_threshold=config.get('thresholds',{}).get('medium',0.75))
     scored[['company_id','flight_number','scheduled_departure_date_local','difficulty_score','daily_rank','difficulty_class']].head().to_string()
     scored.to_csv(OUTPUT_FILES['scores'], index=False)
     print("Scoring completed. Rows:", len(scored))
@@ -366,12 +434,13 @@ def run_pipeline(show_plots: bool = False):
 def parse_args():
     p = argparse.ArgumentParser(description='Run full unified analysis pipeline.')
     p.add_argument('--show', action='store_true', help='Display plots interactively')
+    p.add_argument('--config', help='Path to YAML config file with weights & thresholds', required=False)
     return p.parse_args()
 
 
 def main():
     args = parse_args()
-    run_pipeline(show_plots=args.show)
+    run_pipeline(show_plots=args.show, config_path=args.config)
 
 if __name__ == '__main__':
     main()

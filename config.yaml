@@ -1,0 +1,54 @@
+# -------------------------------------------------------------
+# Execution Notes:
+# - Always activate the virtual environment BEFORE running pipeline:
+#     source .venv/bin/activate  (macOS/Linux)
+# - If you see ModuleNotFoundError: yaml, you likely used system python.
+# - Datetime normalization: bag tag issue timestamps and departure datetimes
+#   are coerced to tz-naive internally to avoid tz-aware vs naive subtraction errors.
+# -------------------------------------------------------------
+weights:
+  ground_time_pressure: 0.13
+  actual_turn_deficit: 0.06
+  turn_deficit_ratio: 0.05
+  total_bags: 0.05
+  transfer_ratio: 0.05
+  hot_transfer_count: 0.03
+  total_pax: 0.07
+  load_factor: 0.05
+  basic_economy_ratio: 0.04
+  booking_lead_days_mean: 0.04
+  late_booking_ratio: 0.04
+  children: 0.03
+  lap_children: 0.02
+  stroller_users: 0.02
+  ssr_count: 0.08
+  is_international: 0.04
+  widebody_flag: 0.05
+  # Priority 2 new weighted features (initial placeholder weights)
+  ssr_mobility_count: 0.02
+  ssr_special_handling_count: 0.02
+  bag_issue_lead_mean: 0.02
+  bag_late_issue_ratio: 0.02
+  bag_per_seat_ratio: 0.02
+  destination_base_difficulty: 0.02
+  # Priority 3 advanced features (initial small exploratory weights)
+  load_factor_volatility: 0.015
+  ground_time_pressure_volatility: 0.015
+  slot_congestion_count: 0.015
+  transfer_ground_interaction: 0.015
+  load_pressure_interaction: 0.015
+  weather_severity_index: 0.01
+
+thresholds:
+  difficult: 0.25
+  medium: 0.75
+
+rolling:
+  destination_base_window: 7   # days lookback (excluding current day)
+  destination_min_flights: 5
+  volatility_window: 5         # trailing occurrences for volatility (excludes current)
+
+late_booking_days: 3
+widebody_seat_threshold: 250
+mobility_ssr_keywords: ["WCHR", "WCHS", "WCHC", "MOBILITY"]
+special_handling_ssr_keywords: ["PET", "UMNR", "MEDA", "STRETCHER"]
