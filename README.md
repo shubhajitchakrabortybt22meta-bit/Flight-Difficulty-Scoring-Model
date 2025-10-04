@@ -251,21 +251,18 @@ During Priority 1 expansion additional engineered features (booking timing, fare
 ### Core Score Formula
 Goal: Combine heterogeneous operational drivers (different scales & units) into a single transparent daily prioritization score.
 
-Formula (flight f on day d)
+Formula (flight f on day d):
+```
+difficulty_score_{f,d} = Σ_{i=1..k} ( w_i * s_{f,d,i} )
+```
 
-$$
-\text{difficulty\_score}_{f,d} = \sum_{i=1}^{k} w_i\, s_{f,d,i}
-$$
-
-Daily scaling of feature i
-
-$$
-s_{f,d,i} =
-\begin{cases}
-0, & \text{if } \max_i(d) = \min_i(d) \\[4pt]
-\dfrac{x_{f,d,i} - \min_i(d)}{\max_i(d) - \min_i(d)}, & \text{otherwise}
-\end{cases}
-$$
+Daily per‑day scaling of feature i (informal piecewise):
+```
+if max_i(d) == min_i(d):
+  s_{f,d,i} = 0   # zero variance safeguard
+else:
+  s_{f,d,i} = ( x_{f,d,i} - min_i(d) ) / ( max_i(d) - min_i(d) )
+```
 
 Definitions
 - k: number of (available ∩ weighted) features used that day
@@ -273,7 +270,7 @@ Definitions
 - min_i(d), max_i(d): per-day minimum and maximum of feature i across all flights on day d
 - s_{f,d,i}: per-day min–max scaled feature value (neutral 0 if zero variance)
 - w_i: non‑negative weight from config (auto-normalized so Σ_i w_i = 1 each run)
-- difficulty_score_{f,d} ∈ [0,1] because each s_{f,d,i} ∈ [0,1] and weights sum to 1
+- difficulty_score_{f,d} in [0,1] because each s_{f,d,i} in [0,1] and weights sum to 1
 
 Edge & handling rules
 - Zero variance feature (max_i(d)=min_i(d)) ⇒ contributes 0 for all flights that day
@@ -396,21 +393,10 @@ for each day d:
 Objective: Convert continuous difficulty scores into stable categorical bands (Difficult / Medium / Easy) based on *relative* daily ordering.
 
 Definitions (per day with N flights):
-\[
-\text{Dense Rank } r_f: \quad 1 = \text{ most difficult (highest score). Ties share the same } r.
-\]
-
-\[
-\text{Percentile Rank } p_f \ (0 = \text{ hardest},\ 1 = \text{ easiest}):
-\]
-
-\[
-\text{if } N == 1: \quad p_f = 0
-\]
-
-\[
-\text{else:} \quad p_f = \frac{r_f - 1}{N - 1}
-\]
+- Dense Rank r_f: 1 = most difficult (highest score). Ties share the same r.
+- Percentile Rank p_f (0 hardest, 1 easiest):
+  - if N == 1: `p_f = 0`
+  - else: `p_f = (r_f - 1) / (N - 1)`
   (Ensures hardest → 0, easiest → 1 regardless of gaps from ties.)
 
 Threshold Mapping (from `config.yaml`):
