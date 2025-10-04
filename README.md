@@ -5,13 +5,30 @@ Clone:
 ```bash
 git clone https://github.com/tusaryan/Flight-Difficulty-Scoring-Model.git
 cd Flight-Difficulty-Scoring-Model
+```
+
+> Repository Name: **Flight-Difficulty-Scoring-Model**
+
+## Quick Start & Local Setup
+For step-by-step environment creation, required data files, and run commands see: **[SETUP_GUIDE.md](SETUP_GUIDE.md)**.
+
+Fast path (after cloning and changing into the repo directory):  
+> **Note:** Ensure Python 3 and pip are installed and available on your PATH.  
+Verify with:
+```bash
+python3 --version
+pip --version
+```
+```bash
+source .venv/bin/activate
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
+mkdir -p resources  # place source CSVs here
+python all_analysis.py --config config.yaml
 ```
-
-> Repository Name: **Flight-Difficulty-Scoring-Model** (formerly referenced locally as `ua-dataset`). If you previously cloned under the old name, no code changes are required—only documentation references were updated.
+If anything fails, consult the troubleshooting table in `SETUP_GUIDE.md`.
 
 ## Overview
 This project implements a reproducible, data-driven framework to:
