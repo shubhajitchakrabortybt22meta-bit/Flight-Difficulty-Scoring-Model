@@ -182,3 +182,11 @@ cython_debug/
 .DS_Store
 /final_result_data
 /result_overview
+.idea/copilot.data.migration.agent.xml
+.idea/copilot.data.migration.ask.xml
+.idea/copilot.data.migration.edit.xml
+.idea/Flight-Difficulty-Scoring-Model.iml
+.idea/inspectionProfiles/profiles_settings.xml
+.idea/misc.xml
+.idea/modules.xml
+.idea/vcs.xml
