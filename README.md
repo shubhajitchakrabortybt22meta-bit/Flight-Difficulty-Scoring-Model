@@ -108,6 +108,96 @@ result_overview/           # Visualization artifacts (PNG charts)
 ```
 If `resources/` is empty, the unified pipeline falls back to root-level CSVs (allows gradual migration).
 
+## Input Dataset Schemas
+Below are the required (R) and optional (O) columns for each input dataset. Optional columns enable additional features if present.
+
+### Flight_Level_Data.csv
+| Column | R/O | Purpose |
+|--------|-----|---------|
+| company_id | R | Part of flight key |
+| flight_number | R | Part of flight key |
+| scheduled_departure_date_local | R | Part of flight key; daily scaling unit |
+| scheduled_departure_station_code | R | Weather & slot congestion context |
+| scheduled_arrival_station_code | R | Destination consistency & international flag |
+| scheduled_departure_datetime_local | R | Time-of-day slot congestion; block time; weather join |
+| scheduled_arrival_datetime_local | R | Block time computation |
+| actual_departure_datetime_local | O | (Could extend real-time metrics) |
+| actual_arrival_datetime_local | O | (Could extend) |
+| total_seats | R | Load factor, bag_per_seat_ratio, size category, widebody flag |
+| minimum_turn_minutes | R | Ground pressure & deficits |
+| scheduled_ground_time_minutes | R | Ground pressure calculation |
+| actual_ground_time_minutes | O | Actual turn deficit, ratio |
+| fleet_type | O | Widebody detection (regex), size category |
+| carrier | O | Express vs mainline |
+| weather_severity_index | O (derived) | Populated by enrichment step if Weather_Data present |
+
+### Bag_Level_Data.csv
+| Column | R/O | Purpose |
+|--------|-----|---------|
+| company_id | R | Join key |
+| flight_number | R | Join key |
+| scheduled_departure_date_local | R | Join key |
+| bag_type | R | Checked vs Transfer vs Hot Transfer counts |
+| bag_tag_issue_datetime / bag_issue_datetime / bag_tag_issue_date | O | Bag timing features (lead & late ratios) |
+
+### PNR_Flight_Level_Data.csv
+| Column | R/O | Purpose |
+|--------|-----|---------|
+| company_id | R | Join key |
+| flight_number | R | Join key |
+| scheduled_departure_date_local | R | Join key |
+| record_locator | R | Bridge to remarks for SSR counts |
+| pnr_creation_date | O | Booking lead metrics |
+| total_pax | R | Load factor, per-pax ratios |
+| basic_economy_pax | O | Basic economy ratio |
+| is_child | O | Children count |
+| is_stroller_user | O | Stroller users |
+| lap_child_count | O | Lap children |
+
+### PNR_Remark_Level_Data.csv
+| Column | R/O | Purpose |
+|--------|-----|---------|
+| record_locator | R | Link to PNR flight |
+| special_service_request | O | SSR categorization (mobility / special handling) |
+
+### Airports_Data.csv
+| Column | R/O | Purpose |
+|--------|-----|---------|
+| airport_iata_code | R | Join for international flag |
+| iso_country_code | R | Domestic vs international determination |
+
+### Weather_Data.csv (Optional)
+| Column | R/O | Purpose |
+|--------|-----|---------|
+| station_code | R | Matched to `scheduled_departure_station_code` |
+| observation_time | R | Floored to hour for temporal join |
+| weather_severity_index | R | Operational environment stress proxy |
+
+If `Weather_Data.csv` is absent, `weather_severity_index` defaults to 0 and scoring proceeds unchanged.
+
+---
+## Weather Enrichment Feature
+When `resources/Weather_Data.csv` exists:
+1. Each flight’s `scheduled_departure_datetime_local` is floored to the hour.
+2. Weather observations are floored similarly; multiple observations per hour are averaged.
+3. A left join assigns `weather_severity_index` (0 if no match).
+4. The feature can be weighted via `config.yaml` (see `weights.weather_severity_index`).
+
+Recommended value range: 0 (benign) → 1 (severe). If using raw METAR-derived indices, normalize before ingest or extend enrichment to compute severity.
+
+Fallback Behavior: Missing file or missing required columns triggers automatic zero fill (no failure). This preserves reproducibility without external data.
+
+Testing: Run the included demo
+```bash
+python weather_enrichment_demo.py
+```
+to view sample severity assignment (see `resources/Flight_Level_Data_weather_demo.csv`).
+
+Timezone Note: Supply weather and flight times in consistent local timezone or UTC; the enrichment coerces both to naive and floors to hour (`.dt.floor('h')`).
+
+---
+
+
 ## Key Scripts
 | Script | Purpose |
 |--------|---------|
@@ -159,15 +249,153 @@ During Priority 1 expansion additional engineered features (booking timing, fare
 | 11 | `optimize_weights` (optional) | Constrained CV weight refinement | Simplex projection (non-negative, sums=1) |
 
 ### Core Score Formula
-For flight *f* on day *d*:
-\( \text{difficulty\_score}_{f,d} = \sum_{i=1}^{k} w_i \cdot z_{f,d,i} \)
-Where:  
-• \(z_{f,d,i}\) = per-day min–max scaled value of feature i.  
-• \(w_i\) = normalized non-negative weight from config/optimizer.  
-Interpretability: linear form means each feature’s marginal influence is directly proportional to its weight and scaled dispersion that day.
+Goal: Combine heterogeneous operational drivers (different scales & units) into a single transparent daily prioritization score.
+
+Formula (flight f on day d)
+
+$$
+\text{difficulty\_score}_{f,d} = \sum_{i=1}^{k} w_i\, s_{f,d,i}
+$$
+
+Daily scaling of feature i
+
+$$
+s_{f,d,i} =
+\begin{cases}
+0, & \text{if } \max_i(d) = \min_i(d) \\[4pt]
+\dfrac{x_{f,d,i} - \min_i(d)}{\max_i(d) - \min_i(d)}, & \text{otherwise}
+\end{cases}
+$$
+
+Definitions
+- k: number of (available ∩ weighted) features used that day
+- x_{f,d,i}: raw engineered value of feature i for flight f on day d
+- min_i(d), max_i(d): per-day minimum and maximum of feature i across all flights on day d
+- s_{f,d,i}: per-day min–max scaled feature value (neutral 0 if zero variance)
+- w_i: non‑negative weight from config (auto-normalized so Σ_i w_i = 1 each run)
+- difficulty_score_{f,d} ∈ [0,1] because each s_{f,d,i} ∈ [0,1] and weights sum to 1
+
+Edge & handling rules
+- Zero variance feature (max_i(d)=min_i(d)) ⇒ contributes 0 for all flights that day
+- Missing feature or absent weight key ⇒ excluded from k
+- Residual NaNs after engineering ⇒ filled before scaling; any remaining become 0 contribution
+- Single-flight day ⇒ all s = 0 ⇒ score = 0 (rank still 1)
+
+Interpretation
+Linear, transparent, additive: each feature’s weighted daily relative position contributes independently to the final difficulty score.
+
+Interpretation:
+• Linear & additive → each feature contributes independently; no hidden transformations.  
+• Weights act as proportional importance multipliers over the *within-day dispersion* of each feature.  
+• A feature with no variation that day has zero influence (neutral) regardless of weight (prevents noise inflation).  
+• To invert a feature whose higher value actually indicates *less* difficulty, either (a) pre-transform it (e.g., use its negative) before scaling, or (b) assign it a zero weight. Current feature set is oriented so “larger == more difficult pressure”.
+
+Step-by-step Computation (per day):
+1. Collect all flights for that calendar day.
+2. For each weighted feature i, compute daily min_i and max_i.
+3. Scale each flight’s value via min–max (guard zero variance → 0).
+4. Multiply each scaled value by its weight and sum.
+5. Store the raw linear sum (already in [0,1] because weights sum to 1 and each s in [0,1]).
+6. Dense-rank descending by score (ties share rank).
+
+Mini Example
+Assume 1 day, 5 flights (F1–F5), 3 features (A,B,C) with weights: w_A=0.5, w_B=0.3, w_C=0.2.
+
+Raw values:
+Flight | A | B | C
+F1 | 10 |  5 | 0
+F2 | 20 |  5 | 5
+F3 | 25 | 10 | 8
+F4 | 10 | 10 | 2
+F5 | 25 |  5 | 8
+
+Daily mins: A=10, B=5, C=0; maxes: A=25, B=10, C=8.
+Scaled:
+Flight | A_s | B_s | C_s
+F1 | (10-10)/(15)=0.00 | (5-5)/5=0.00 | (0-0)/8=0.00
+F2 | (20-10)/15=0.67  | 0.00 | 0.625
+F3 | (25-10)/15=1.00  | 1.00 | 1.00
+F4 | 0.00             | 1.00 | 0.25
+F5 | 1.00             | 0.00 | 1.00
+
+Scores:
+F1: 0.5*0 + 0.3*0 + 0.2*0     = 0.000
+F2: 0.5*0.67 + 0.3*0 + 0.2*0.625 = 0.335 + 0 + 0.125 = 0.460
+F3: 0.5*1 + 0.3*1 + 0.2*1     = 1.000
+F4: 0.5*0 + 0.3*1 + 0.2*0.25  = 0.000 + 0.300 + 0.050 = 0.350
+F5: 0.5*1 + 0.3*0 + 0.2*1     = 0.500 + 0 + 0.200 = 0.700
+
+Dense Rank (descending): F3=1, F5=2, F2=3, F4=4, F1=5.
+
+Edge Cases & Safeguards
+• Single Flight Day: All scaled features → 0 (variance=0); score=0; rank=1; percentile rank defined as 0 (hardest).  
+• All Flights Identical on a Feature: That feature contributes 0 for all flights that day (neutral).  
+• Missing Feature in Data or Weight Dict: Ignored (only intersection of available features & weight keys used).  
+• NaNs After Engineering: Imputed/filled prior to scaling; residual NaNs treated as zero contribution.
+
+Why Daily Min–Max (not z-score)?
+• Respects bounded [0,1] interpretability & ensures comparability across features linearly.  
+• Prevents extreme-value leverage that a standard deviation (z) could introduce on skewed distributions.  
+• Centers decision-making on *relative* intra-day spread (operational capacity & composition fluctuate daily).
+
+Pseudocode (simplified):
+```
+for each day d:
+  flights_d = flights[day==d]
+  for each feature i in weighted_features:
+    mn, mx = min(flights_d[i]), max(flights_d[i])
+    if mx == mn: scaled[i] = 0 for all flights_d
+    else: scaled[i] = (flights_d[i]-mn)/(mx-mn)
+  # Normalize weights (safety)
+  W = weights / sum(weights)
+  score = Σ_i (W[i] * scaled[i])
+  rank = dense_rank(desc(score))
+```
 
 ### Classification Logic
-Let percentile rank (0 = hardest) = (rank−1)/(N−1). Thresholds: < *difficult* → Difficult; < *medium* → Medium; else Easy (values in `config.yaml`). This keeps category proportions stable even if absolute complexity distribution shifts.
+Objective: Convert continuous difficulty scores into stable categorical bands (Difficult / Medium / Easy) based on *relative* daily ordering.
+
+Definitions (per day with N flights):
+• Dense Rank r_f: 1 = most difficult (highest score). Ties share the same r.  
+• Percentile Rank p_f (0 = hardest, 1 = easiest):
+    if N == 1: p_f = 0
+    else: p_f = (r_f - 1) / (N - 1)
+  (Ensures hardest → 0, easiest → 1 regardless of gaps from ties.)
+
+Threshold Mapping (from `config.yaml`):
+• difficult_threshold (e.g., 0.25)
+• medium_threshold (e.g., 0.75)
+
+Category Assignment:
+  if p_f < difficult_threshold:  'Difficult'
+  elif p_f < medium_threshold:   'Medium'
+  else:                          'Easy'
+
+Rationale:
+• Maintains approximate proportions even if absolute score distribution narrows or widens.  
+• Percentile-based approach is robust to feature scale shifts after weight adjustments.  
+• Dense ranks avoid inflation of percentile steps caused by tied scores (ties occupy a single rank value).
+
+Example (N = 8, thresholds 0.25 / 0.75):
+Ranks 1..8 → Percentiles: 0.00, 0.14, 0.29, 0.43, 0.57, 0.71, 0.86, 1.00
+⇒ Difficult: ranks 1–2 (p < 0.25)
+   Medium: ranks 3–6 (0.25 ≤ p < 0.75)
+   Easy: ranks 7–8 (p ≥ 0.75)
+
+Edge Considerations:
+• Boundary Tie: If multiple flights tie at the cutoff rank, all acquire the same percentile and thus same category (may slightly shift proportion—acceptable tradeoff for fairness).  
+• Extreme Threshold Tuning: Setting difficult_threshold too low (<0.05) can create unstable daily counts; recommended floor ~0.15 unless the day has large flight volume.  
+• Small N Days: With very few flights (e.g., N=3), distributions become coarse—documented in methodology to contextualize category proportions.
+
+Customizing Thresholds:
+1. Adjust `difficult` & `medium` in `config.yaml` (must satisfy 0 < difficult < medium < 1).  
+2. Re-run pipeline; categories recompute automatically—no need to modify code.  
+3. Validate resulting proportions using `eda_metrics.csv` (optional) to ensure operational alignment.
+
+Sanity Metrics to Monitor:
+• Daily Difficult Flight Count variance (should reflect intended proportion, not drift systematically).  
+• Stability of top driver lifts when thresholds change (indicates robustness of underlying feature importance).  
+• Correlation between score and observed disruption proxies (if/when available) should not degrade markedly after threshold tuning.
 
 ### Leakage Avoidance
 | Feature | Protection |

@@ -31,8 +31,9 @@ def enrich_with_weather(flights: pd.DataFrame) -> pd.DataFrame:
     weather['observation_time'] = pd.to_datetime(weather['observation_time'], errors='coerce')
     flights = flights.copy()
     flights['scheduled_departure_datetime_local'] = pd.to_datetime(flights['scheduled_departure_datetime_local'], errors='coerce')
-    flights['dep_hour'] = flights['scheduled_departure_datetime_local'].dt.floor('H')
-    weather['obs_hour'] = weather['observation_time'].dt.floor('H')
+    # Use lowercase 'h' to avoid FutureWarning (floor hourly)
+    flights['dep_hour'] = flights['scheduled_departure_datetime_local'].dt.floor('h')
+    weather['obs_hour'] = weather['observation_time'].dt.floor('h')
     # Aggregate multiple reports per hour per station
     w_hour = weather.groupby(['station_code','obs_hour']).agg(weather_severity_index=('weather_severity_index','mean')).reset_index()
     merged = flights.merge(w_hour, left_on=['scheduled_departure_station_code','dep_hour'], right_on=['station_code','obs_hour'], how='left')

@@ -1,0 +1,4 @@
+company_id,flight_number,scheduled_departure_date_local,scheduled_departure_station_code,scheduled_arrival_station_code,scheduled_departure_datetime_local,scheduled_arrival_datetime_local,total_seats,minimum_turn_minutes,scheduled_ground_time_minutes,actual_ground_time_minutes,fleet_type,carrier
+UA,1001,2025-08-01,ORD,MIA,2025-08-01 08:15:00,2025-08-01 12:05:00,180,50,55,54,738,mainline
+UA,1002,2025-08-01,ORD,MIA,2025-08-01 09:45:00,2025-08-01 13:30:00,180,50,55,53,738,mainline
+UA,2001,2025-08-01,MIA,ORD,2025-08-01 08:20:00,2025-08-01 11:05:00,180,50,52,51,738,mainline

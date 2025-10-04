@@ -17,7 +17,6 @@ python3 all_analysis.py --config config.yaml
 ```
 Outputs land in `final_result_data/` (CSVs) and `result_overview/` (charts).
 
-Legacy note: Earlier documentation referenced the folder name `ua-dataset`; functionality is identical—only the directory name changed.
 
 ---
 ## 2. Prerequisites
@@ -40,6 +39,17 @@ Place the following source CSVs in the `resources/` folder (exact filenames expe
 | `PNR_Remark_Level_Data.csv` | SSR & special request remarks |
 | `Airports_Data.csv` | Airport metadata (country code for international flag) |
 | (Optional) `Weather_Data.csv` | Hourly station weather severity index |
+
+### 3.1 Detailed Schemas (Quick Reference)
+See full schema table in the main `README.md` (Input Dataset Schemas). Minimal required columns per file:
+- Flights: company_id, flight_number, scheduled_departure_date_local, scheduled_departure_station_code, scheduled_arrival_station_code, scheduled_departure_datetime_local, scheduled_arrival_datetime_local, total_seats, minimum_turn_minutes, scheduled_ground_time_minutes
+- Bags: company_id, flight_number, scheduled_departure_date_local, bag_type
+- PNR Flight: company_id, flight_number, scheduled_departure_date_local, record_locator, total_pax
+- PNR Remarks: record_locator (plus special_service_request for categorization)
+- Airports: airport_iata_code, iso_country_code
+- Weather (optional): station_code, observation_time, weather_severity_index
+
+Optional columns enhance features (see README for list).
 
 If `resources/` is empty, the pipeline will attempt to fall back to root-level copies (not recommended for new setups).
 
@@ -110,6 +120,12 @@ Add `resources/Weather_Data.csv` with columns:
 station_code,observation_time,weather_severity_index
 ```
 Times should be ISO or parseable; the system hour-aligns to flight departure. Missing file ⇒ feature auto-falls back to 0.
+
+To test quickly:
+```bash
+python weather_enrichment_demo.py
+```
+Adjust weight (importance) in `config.yaml` under `weights.weather_severity_index`.
 
 ---
 ## 9. Testing
