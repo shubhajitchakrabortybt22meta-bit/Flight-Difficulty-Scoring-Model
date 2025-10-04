@@ -298,34 +298,74 @@ Step-by-step Computation (per day):
 5. Store the raw linear sum (already in [0,1] because weights sum to 1 and each s in [0,1]).
 6. Dense-rank descending by score (ties share rank).
 
-Mini Example
-Assume 1 day, 5 flights (F1–F5), 3 features (A,B,C) with weights: w_A=0.5, w_B=0.3, w_C=0.2.
+### Mini Example (Illustrative Daily Scoring & Ranking)
 
-Raw values:
-Flight | A | B | C
-F1 | 10 |  5 | 0
-F2 | 20 |  5 | 5
-F3 | 25 | 10 | 8
-F4 | 10 | 10 | 2
-F5 | 25 |  5 | 8
+Assume 1 day, 5 flights (F1–F5), 3 weighted features A,B,C with weights: w_A=0.5, w_B=0.3, w_C=0.2 (already summing to 1 so no re‑normalization needed).
 
-Daily mins: A=10, B=5, C=0; maxes: A=25, B=10, C=8.
-Scaled:
-Flight | A_s | B_s | C_s
-F1 | (10-10)/(15)=0.00 | (5-5)/5=0.00 | (0-0)/8=0.00
-F2 | (20-10)/15=0.67  | 0.00 | 0.625
-F3 | (25-10)/15=1.00  | 1.00 | 1.00
-F4 | 0.00             | 1.00 | 0.25
-F5 | 1.00             | 0.00 | 1.00
+Raw feature values
+| Flight | A | B | C |
+|--------|---|---|---|
+| F1 | 10 | 5  | 0 |
+| F2 | 20 | 5  | 5 |
+| F3 | 25 | 10 | 8 |
+| F4 | 10 | 10 | 2 |
+| F5 | 25 | 5  | 8 |
 
-Scores:
-F1: 0.5*0 + 0.3*0 + 0.2*0     = 0.000
-F2: 0.5*0.67 + 0.3*0 + 0.2*0.625 = 0.335 + 0 + 0.125 = 0.460
-F3: 0.5*1 + 0.3*1 + 0.2*1     = 1.000
-F4: 0.5*0 + 0.3*1 + 0.2*0.25  = 0.000 + 0.300 + 0.050 = 0.350
-F5: 0.5*1 + 0.3*0 + 0.2*1     = 0.500 + 0 + 0.200 = 0.700
+Per‑day mins: A=10, B=5, C=0  
+Per‑day maxes: A=25, B=10, C=8
 
-Dense Rank (descending): F3=1, F5=2, F2=3, F4=4, F1=5.
+Min–max scaled features
+| Flight | A_s | B_s | C_s |
+|--------|-----|-----|-----|
+| F1 | (10-10)/15 = 0.00 | (5-5)/5 = 0.00 | (0-0)/8 = 0.00 |
+| F2 | (20-10)/15 = 0.67 | 0.00 | (5-0)/8 = 0.625 |
+| F3 | (25-10)/15 = 1.00 | (10-5)/5 = 1.00 | (8-0)/8 = 1.00 |
+| F4 | 0.00 | 1.00 | (2-0)/8 = 0.25 |
+| F5 | 1.00 | 0.00 | 1.00 |
+
+Composite difficulty scores
+| Flight | Calculation | Score |
+|--------|-------------|-------|
+| F1 | 0.5*0.00 + 0.3*0.00 + 0.2*0.00 | 0.000 |
+| F2 | 0.5*0.67 + 0.3*0.00 + 0.2*0.625 | 0.460 |
+| F3 | 0.5*1.00 + 0.3*1.00 + 0.2*1.00 | 1.000 |
+| F4 | 0.5*0.00 + 0.3*1.00 + 0.2*0.25 | 0.350 |
+| F5 | 0.5*1.00 + 0.3*0.00 + 0.2*1.00 | 0.700 |
+
+Dense rank (descending score)
+| Flight | Score | Dense Rank |
+|--------|-------|------------|
+| F3 | 1.000 | 1 |
+| F5 | 0.700 | 2 |
+| F2 | 0.460 | 3 |
+| F4 | 0.350 | 4 |
+| F1 | 0.000 | 5 |
+
+Percentile rank (p = (rank−1)/(N−1), N=5)
+| Flight | Rank | Percentile p |
+|--------|------|--------------|
+| F3 | 1 | 0.00 |
+| F5 | 2 | 0.25 |
+| F2 | 3 | 0.50 |
+| F4 | 4 | 0.75 |
+| F1 | 5 | 1.00 |
+
+Category assignment (thresholds: difficult <0.25, medium <0.75)
+| Flight | Percentile | Category |
+|--------|------------|----------|
+| F3 | 0.00 | Difficult |
+| F5 | 0.25 | Medium |
+| F2 | 0.50 | Medium |
+| F4 | 0.75 | Easy |
+| F1 | 1.00 | Easy |
+
+Notes
+- Ties would share a dense rank; percentile uses the shared rank.
+- Boundary equality (e.g., p == 0.25) falls into the next band because comparison is p < threshold.
+- Scores remain within [0,1] given min–max scaling and weights summing to 1.
+- Features with zero intra-day variance would contribute 0 uniformly (not present in this example).
+
+This compact example demonstrates the exact daily sequence: raw → scaled → weighted sum → rank → percentile → category.
 
 Edge Cases & Safeguards
 • Single Flight Day: All scaled features → 0 (variance=0); score=0; rank=1; percentile rank defined as 0 (hardest).  
@@ -356,10 +396,21 @@ for each day d:
 Objective: Convert continuous difficulty scores into stable categorical bands (Difficult / Medium / Easy) based on *relative* daily ordering.
 
 Definitions (per day with N flights):
-• Dense Rank r_f: 1 = most difficult (highest score). Ties share the same r.  
-• Percentile Rank p_f (0 = hardest, 1 = easiest):
-    if N == 1: p_f = 0
-    else: p_f = (r_f - 1) / (N - 1)
+\[
+\text{Dense Rank } r_f: \quad 1 = \text{ most difficult (highest score). Ties share the same } r.
+\]
+
+\[
+\text{Percentile Rank } p_f \ (0 = \text{ hardest},\ 1 = \text{ easiest}):
+\]
+
+\[
+\text{if } N == 1: \quad p_f = 0
+\]
+
+\[
+\text{else:} \quad p_f = \frac{r_f - 1}{N - 1}
+\]
   (Ensures hardest → 0, easiest → 1 regardless of gaps from ties.)
 
 Threshold Mapping (from `config.yaml`):
