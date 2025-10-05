@@ -5,7 +5,7 @@ This guide provides a clean, step‑by‑step path to install, configure, and ru
 ---
 ## 1. Quick Start (TL;DR)
 ```bash
-git clone https://github.com/tusaryan/Flight-Difficulty-Scoring-Model.git
+git clone https://github.com/shubhajitchakrabortybt22meta-bit/Flight-Difficulty-Scoring-Model.git
 cd Flight-Difficulty-Scoring-Model
 python3 -m venv .venv
 source .venv/bin/activate  # macOS / Linux (zsh)
