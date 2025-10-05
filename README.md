@@ -3,7 +3,7 @@
 Repository: https://github.com/shubhajitchakrabortybt22meta-bit/Flight-Difficulty-Scoring-Model  
 Clone:
 ```bash
-git clone https://github.com/tusaryan/Flight-Difficulty-Scoring-Model.git
+git clone https://github.com/shubhajitchakrabortybt22meta-bit/Flight-Difficulty-Scoring-Model.git
 cd Flight-Difficulty-Scoring-Model
 ```
 
